@@ -11,7 +11,13 @@ class MediaService {
   late Cloudinary _cloudinary;
 
   void init() {
-    _cloudinary = Cloudinary.fromCloudName(cloudName: dotenv.get('CLOUDINARY_CLOUD_NAME'));
+    try {
+      final cloudName = dotenv.maybeGet('CLOUDINARY_CLOUD_NAME') ?? '';
+      _cloudinary = Cloudinary.fromCloudName(cloudName: cloudName);
+    } catch (e) {
+      debugPrint("MediaService: Cloudinary init failed (likely missing credentials): $e");
+      // Create a dummy instance or handle the null _cloudinary in getters
+    }
   }
 
   String getImageUrl(String publicId, {int? width, int? height}) {

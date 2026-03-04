@@ -10,7 +10,11 @@ class DatabaseService {
   Connection? _connection;
 
   Future<void> connect() async {
-    final url = dotenv.get('POSTGRES_URL');
+    final url = dotenv.maybeGet('POSTGRES_URL');
+    if (url == null) {
+      print('Database connection skipped: POSTGRES_URL not found');
+      return;
+    }
     try {
       // In newer postgres package versions, you can often pass the URL directly or parse it manually
       final uri = Uri.parse(url);
