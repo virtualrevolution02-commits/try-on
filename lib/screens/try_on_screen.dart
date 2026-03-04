@@ -17,6 +17,7 @@ import '../models/clothing_item.dart';
 import '../providers/tryon_provider.dart';
 import '../utils/api_config.dart';
 import '../widgets/animated_press.dart';
+import '../services/web_pose_service.dart';
 
 class TryOnScreen extends StatefulWidget {
   @override
@@ -32,7 +33,13 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
   PoseDetector? _poseDetector;
   bool _isBusy = false;
   bool _isCameraReady = false;
-
+  
+  // Web specific pose tracking
+  double _webPoseX = 0.5; // Normalized center X
+  double _webPoseY = 0.4; // Normalized center Y
+  double _webPoseWidth = 0; // Normalized width
+  bool _webPoseActive = false;
+  
   bool _arReady = false;
   bool _capturing = false;
   bool _showSkeleton = false;
@@ -51,6 +58,32 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
 
     _initializeCamera();
     _initializePoseDetector();
+    
+    if (kIsWeb) {
+      _initializeWebPose();
+    }
+  }
+
+  void _initializeWebPose() {
+    WebPoseService().onPoseUpdate = (landmarks) {
+      if (landmarks.length > 12) {
+        final leftShoulder = landmarks[11]; // Mediapipe indices
+        final rightShoulder = landmarks[12];
+        
+        if (mounted) {
+          setState(() {
+            _webPoseX = (leftShoulder['x'] + rightShoulder['x']) / 2;
+            _webPoseY = (leftShoulder['y'] + rightShoulder['y']) / 2;
+            
+            final dx = leftShoulder['x'] - rightShoulder['x'];
+            final dy = leftShoulder['y'] - rightShoulder['y'];
+            _webPoseWidth = vector.Vector2(dx, dy).length;
+            _webPoseActive = true;
+          });
+        }
+      }
+    };
+    WebPoseService().init();
   }
 
   @override
@@ -350,38 +383,31 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
             ),
 
           // 2. Native AR View / 3D Overlay
-          Positioned.fill(
-            child: kIsWeb
-                ? (selectedItem?.displayModelPath != null
-                    ? ModelViewer(
-                        src: selectedItem!.displayModelPath!,
-                        alt: selectedItem.name,
-                        ar: true,
-                        autoRotate: false,
-                        cameraControls: true,
-                        backgroundColor: Colors.transparent, // Fix: remove black background
-                      )
-                    : Container()) // Transparent when nothing selected
-                : (defaultTargetPlatform == TargetPlatform.android)
-                    ? android_ar.ArCoreView(
-                        onArCoreViewCreated: _onArCoreViewCreated,
-                        enablePlaneRenderer: false, // Cleaner body tracking feel
-                        enableTapRecognizer: true,
-                      )
-                    : (defaultTargetPlatform == TargetPlatform.iOS)
-                        ? ios_ar.ARKitSceneView(
-                            onARKitViewCreated: _onArKitViewCreated,
-                            showFeaturePoints: _showSkeleton,
-                            enableTapRecognizer: true,
-                            configuration: ios_ar.ARKitConfiguration.bodyTracking,
-                          )
-                        : const Center(
-                            child: Text(
-                              "AR not supported on this platform",
-                              style: TextStyle(color: Colors.white),
-                            ),
+          if (kIsWeb && selectedItem?.displayModelPath != null && _webPoseActive)
+            _buildWebTrackedModel(selectedItem!),
+
+          if (!kIsWeb)
+            Positioned.fill(
+              child: (defaultTargetPlatform == TargetPlatform.android)
+                  ? android_ar.ArCoreView(
+                      onArCoreViewCreated: _onArCoreViewCreated,
+                      enablePlaneRenderer: false, // Cleaner body tracking feel
+                      enableTapRecognizer: true,
+                    )
+                  : (defaultTargetPlatform == TargetPlatform.iOS)
+                      ? ios_ar.ARKitSceneView(
+                          onARKitViewCreated: _onArKitViewCreated,
+                          showFeaturePoints: _showSkeleton,
+                          enableTapRecognizer: true,
+                          configuration: ios_ar.ARKitConfiguration.bodyTracking,
+                        )
+                      : const Center(
+                          child: Text(
+                            "AR not supported on this platform",
+                            style: TextStyle(color: Colors.white),
                           ),
-          ),
+                        ),
+            ),
 
           // Top Bar Overlay
           Positioned(
@@ -549,6 +575,35 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildWebTrackedModel(ClothingItem item) {
+    final size = MediaQuery.of(context).size;
+    
+    // Convert normalized coordinates to pixel values
+    final double x = _webPoseX * size.width;
+    final double y = _webPoseY * size.height;
+    
+    // Calculate width of the shirt based on shoulder distance
+    final double shirtWidth = _webPoseWidth * size.width * 2.5; 
+    final double shirtHeight = shirtWidth * 1.25; // Estimate aspect ratio
+    
+    return Positioned(
+      left: x - (shirtWidth / 2),
+      top: y - (shirtHeight * 0.25), // Offset slightly up to align with shoulders
+      width: shirtWidth,
+      height: shirtHeight,
+      child: IgnorePointer(
+        child: ModelViewer(
+          src: item.displayModelPath ?? "",
+          alt: item.name,
+          ar: false,
+          autoRotate: false,
+          cameraControls: false,
+          backgroundColor: Colors.transparent,
+        ),
       ),
     );
   }
