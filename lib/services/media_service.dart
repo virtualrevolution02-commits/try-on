@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:cloudinary_url_gen/cloudinary.dart';
 import 'package:cloudinary_url_gen/transformation/transformation.dart';
 import 'package:cloudinary_url_gen/transformation/resize/resize.dart';
