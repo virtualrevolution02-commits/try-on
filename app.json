@@ -1,26 +1,32 @@
 {
   "expo": {
-    "name": "My App",
+    "name": "TryOn",
     "slug": "my-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "myapp",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#FAFAF8"
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.myapp"
+      "bundleIdentifier": "com.myapp",
+      "infoPlist": {
+        "NSCameraUsageDescription": "TryOn needs camera access to virtually try on clothing items in real-time.",
+        "NSPhotoLibraryUsageDescription": "TryOn needs photo library access to save your try-on looks.",
+        "NSPhotoLibraryAddUsageDescription": "TryOn saves your try-on photos to your photo library."
+      }
     },
     "android": {
       "package": "com.myapp",
+      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE", "WRITE_EXTERNAL_STORAGE"],
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#FAFAF8",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -37,7 +43,9 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-camera",
+      "expo-image-picker"
     ],
     "experiments": {
       "typedRoutes": true,
