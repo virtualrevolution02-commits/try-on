@@ -14,33 +14,137 @@
   <meta name="apple-mobile-web-app-title" content="ar_try_on">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
-  <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png" />
-
   <title>ar_try_on</title>
   <link rel="manifest" href="manifest.json">
 
-  <!-- Model Viewer -->
-  <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>
+  <!-- ==================== WEB AR ENGINE ==================== -->
+  <style>
+    /* The AR Canvas sits behind Flutter */
+    #ar-canvas-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: -1;
+      overflow: hidden;
+      background-color: #000;
+    }
+
+    #ar-video {
+      display: none;
+      /* Used as a texture source, not rendered directly */
+    }
+
+    #ar-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+  </style>
+
+  <!-- Three.js (r128 for stability with GLTFLoader) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 
   <!-- Mediapipe Pose -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
 
   <script>
-    window.flutter_web_pose = {
-      detector: null,
-      videoElement: null,
+    window.WebAREngine = {
+      scene: null,
+      camera: null,
+      renderer: null,
+      model: null,
+      video: null,
+      videoTexture: null,
+      poseDetector: null,
+      sceneInitialized: false,
+
+      // Bridge for Flutter
       onPoseDetected: null,
 
       init: async function () {
-        this.detector = new Pose({
+        console.log("[WebAREngine] Initializing...");
+        this.setupThreeJS();
+        await this.setupMediaPipe();
+        this.startCamera();
+      },
+
+      setupThreeJS: function () {
+        const container = document.getElementById('ar-canvas-container');
+        const canvas = document.getElementById('ar-canvas');
+
+        // Scene
+        this.scene = new THREE.Scene();
+
+        // Camera (Orthographic is often better for 2D overlay alignment)
+        const aspect = window.innerWidth / window.innerHeight;
+        // Using Perspective for now to allow 3D depth, will tuning FOV to match webcam
+        this.camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 1000);
+        this.camera.position.z = 5;
+
+        // Renderer
+        this.renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.setPixelRatio(window.devicePixelRatio);
+        // Important: Output encoding for glTF
+        this.renderer.outputEncoding = THREE.sRGBEncoding;
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+        this.scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        directionalLight.position.set(0, 5, 5);
+        this.scene.add(directionalLight);
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+          this.camera.aspect = window.innerWidth / window.innerHeight;
+          this.camera.updateProjectionMatrix();
+          this.renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Setup Video Texture background
+        this.video = document.getElementById('ar-video');
+        this.videoTexture = new THREE.VideoTexture(this.video);
+        this.videoTexture.minFilter = THREE.LinearFilter;
+        this.videoTexture.magFilter = THREE.LinearFilter;
+        this.videoTexture.format = THREE.RGBFormat;
+        this.scene.background = this.videoTexture;
+
+        this.sceneInitialized = true;
+        this.animate();
+      },
+
+      loadModel: function (glbUrl) {
+        console.log("[WebAREngine] Loading model: ", glbUrl);
+        if (this.model) {
+          this.scene.remove(this.model);
+        }
+
+        const loader = new THREE.GLTFLoader();
+        loader.load(glbUrl, (gltf) => {
+          this.model = gltf.scene;
+          // Initial safe placement, hidden behind camera until pose found
+          this.model.position.set(0, 0, -10);
+          this.model.scale.set(0, 0, 0);
+          this.scene.add(this.model);
+          console.log("[WebAREngine] Model loaded successfully.");
+        }, undefined, (error) => {
+          console.error("[WebAREngine] GLTF Load Error:", error);
+        });
+      },
+
+      setupMediaPipe: async function () {
+        this.poseDetector = new Pose({
           locateFile: (file) => {
             return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
           }
         });
 
-        this.detector.setOptions({
+        this.poseDetector.setOptions({
           modelComplexity: 1,
           smoothLandmarks: true,
           enableSegmentation: false,
@@ -48,45 +152,139 @@
           minTrackingConfidence: 0.5
         });
 
-        this.detector.onResults((results) => {
+        this.poseDetector.onResults((results) => {
+          this.handlePoseResults(results);
+          // Pass raw data back to Flutter if it still wants to draw HUD elements
           if (this.onPoseDetected && results.poseLandmarks) {
-            // Send landmarks and worldLandmarks back to Flutter for 3D orientation
-            this.onPoseDetected(JSON.stringify({
-              landmarks: results.poseLandmarks,
-              worldLandmarks: results.poseWorldLandmarks || null
-            }));
+            this.onPoseDetected(JSON.stringify(results.poseLandmarks));
           }
         });
-
-        const findVideo = () => {
-          const videos = document.getElementsByTagName('video');
-          if (videos.length > 0) {
-            this.videoElement = videos[0];
-            this.startTracking();
-          } else {
-            setTimeout(findVideo, 1000);
-          }
-        };
-        findVideo();
       },
 
-      startTracking: function () {
-        const camera = new Camera(this.videoElement, {
-          onFrame: async () => {
-            await this.detector.send({ image: this.videoElement });
-          },
-          width: 640,
-          height: 480
-        });
-        camera.start();
+      handlePoseResults: function (results) {
+        if (!this.model || !results.poseLandmarks || !results.poseWorldLandmarks) {
+          // Hide model if no pose
+          if (this.model) this.model.scale.set(0, 0, 0);
+          return;
+        }
+
+        const landmarks = results.poseLandmarks;
+        const worldLandmarks = results.poseWorldLandmarks;
+
+        const leftShoulder = landmarks[11];
+        const rightShoulder = landmarks[12];
+        const leftHip = landmarks[23];
+        const rightHip = landmarks[24];
+
+        const wLS = worldLandmarks[11];
+        const wRS = worldLandmarks[12];
+        const wLH = worldLandmarks[23];
+        const wRH = worldLandmarks[24];
+
+        // 1. POSITIONING (Screen Space Mapping)
+        // Convert MediaPipe normalized coordinates (0 to 1) to Three.js coordinates
+        // Three.js origin (0,0) is center. x goes -width/2 to width/2. y goes -height/2 to height/2.
+
+        // Get camera frustum dimensions at z=0 
+        const vFOV = THREE.MathUtils.degToRad(this.camera.fov);
+        const heightAtZ = 2 * Math.tan(vFOV / 2) * this.camera.position.z;
+        const widthAtZ = heightAtZ * this.camera.aspect;
+
+        // Chest center
+        const cx = (leftShoulder.x + rightShoulder.x) / 2;
+        const cy = (leftShoulder.y + rightShoulder.y) / 2;
+
+        // Map to Three.js space (-1 to 1) * frustum size
+        const targetX = (cx * 2 - 1) * (widthAtZ / 2);
+        // MediaPipe Y is top-down (0 top, 1 bottom), Three.js Y is bottom-up
+        const targetY = -(cy * 2 - 1) * (heightAtZ / 2);
+
+        // Offset slightly down so neck hole aligns with shoulders
+        this.model.position.x = targetX;
+        this.model.position.y = targetY - (heightAtZ * 0.05); // adjust offset based on model
+
+        // 2. SCALING
+        const shoulderDistNormalized = Math.sqrt(Math.pow(leftShoulder.x - rightShoulder.x, 2) + Math.pow(leftShoulder.y - rightShoulder.y, 2));
+        // Base scale on shoulder width occupying the screen
+        const scaleFactor = shoulderDistNormalized * widthAtZ * 1.8; // Tune multiplier for fit
+        this.model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+
+        // 3. ROTATION (Using World Landmarks for true 3D Depth)
+        // Yaw (Turning left/right)
+        const yaw = Math.atan2(wLS.z - wRS.z, wLS.x - wRS.x);
+
+        // Pitch (Leaning forward/back)
+        // Use average shoulder vs average hip Z to detect lean
+        const chestZ = (wLS.z + wRS.z) / 2;
+        const hipZ = (wLH.z + wRH.z) / 2;
+        const chestY = (wLS.y + wRS.y) / 2;
+        const hipY = (wLH.y + wRH.y) / 2;
+        const pitch = Math.atan2(chestZ - hipZ, chestY - hipY);
+
+        // Roll (Tilting head side to side / leaning shoulder)
+        const roll = Math.atan2(wLS.y - wRS.y, wLS.x - wRS.x);
+
+        // Apply rotation to the model
+        // Note: Euler order (YXZ, etc.) and signage depends heavily on the specific GLB's native orientation.
+        // Assuming a standard T-pose front-facing model:
+        this.model.rotation.set(
+          pitch * 0.5, // Slight dampening on pitch
+          -yaw,        // Invert yaw
+          -roll        // Invert roll
+        );
+      },
+
+      startCamera: function () {
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 } })
+            .then((stream) => {
+              this.video.srcObject = stream;
+              this.video.play();
+
+              // Feed video frames to MediaPipe
+              const sendFrame = async () => {
+                if (!this.video.paused && !this.video.ended) {
+                  await this.poseDetector.send({ image: this.video });
+                }
+                requestAnimationFrame(sendFrame);
+              };
+              this.video.onloadeddata = () => {
+                sendFrame();
+              };
+            })
+            .catch((err) => {
+              console.error("[WebAREngine] Camera error: ", err);
+            });
+        }
+      },
+
+      animate: function () {
+        requestAnimationFrame(() => this.animate());
+        if (this.sceneInitialized) {
+          this.renderer.render(this.scene, this.camera);
+        }
       }
     };
+
+    // Keep the old object name so Flutter bridge doesn't crash immediately while we refactor Dart
+    window.flutter_web_pose = {
+      init: () => window.WebAREngine.init(),
+      set onPoseDetected(cb) { window.WebAREngine.onPoseDetected = cb; },
+      // New method for giving the GLB to JS directly
+      loadModel: (url) => window.WebAREngine.loadModel(url)
+    };
+
   </script>
 </head>
 
 <body>
+  <!-- Container for the Three.js canvas -->
+  <div id="ar-canvas-container">
+    <video id="ar-video" playsinline></video>
+    <canvas id="ar-canvas"></canvas>
+  </div>
+
   <script src="flutter_bootstrap.js" async></script>
 </body>
 
 </html>
-产

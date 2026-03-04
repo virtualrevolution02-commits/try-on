@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 class WebPose {
   external static void init();
   external static set onPoseDetected(Function(String) callback);
+  external static void loadModel(String url);
 }
 
 class WebPoseService {
@@ -27,6 +28,15 @@ class WebPoseService {
       debugPrint("WebPoseService initialized");
     } catch (e) {
       debugPrint("WebPoseService init error: $e");
+    }
+  }
+
+  void loadModel(String url) {
+    if (!kIsWeb) return;
+    try {
+      WebPose.loadModel(url);
+    } catch (e) {
+      debugPrint("WebPoseService loadModel error: $e");
     }
   }
 }

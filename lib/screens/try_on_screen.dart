@@ -7,8 +7,6 @@ import 'package:arcore_flutter_plugin/arcore_flutter_plugin.dart' as android_ar;
 import 'package:arkit_plugin/arkit_plugin.dart' as ios_ar;
 import 'package:vector_math/vector_math_64.dart' as vector;
 
-import 'package:model_viewer_plus/model_viewer_plus.dart';
-
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 
@@ -16,36 +14,31 @@ import '../constants/colors.dart';
 import '../constants/clothing_data.dart';
 import '../models/clothing_item.dart';
 import '../providers/tryon_provider.dart';
-import '../utils/api_config.dart';
 import '../widgets/animated_press.dart';
 import '../services/web_pose_service.dart';
 
 class TryOnScreen extends StatefulWidget {
+  const TryOnScreen({Key? key}) : super(key: key);
+
   @override
+  // ignore: library_private_types_in_public_api
   _TryOnScreenState createState() => _TryOnScreenState();
 }
 
 class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStateMixin {
+  // Native Mobile AR Controllers
   android_ar.ArCoreController? _arCoreController;
   ios_ar.ARKitController? _arkitController;
   
-  // Camera & Tracking
+  // Mobile Camera & Tracking
   CameraController? _cameraController;
   PoseDetector? _poseDetector;
   bool _isBusy = false;
   bool _isCameraReady = false;
   
-  // Web specific pose tracking
-  double _webPoseX = 0.5; // Normalized center X
-  double _webPoseY = 0.4; // Normalized center Y
-  double _webPoseWidth = 0.5; // Normalized width
-  double _webPoseYaw = 0; // In radians
-  double _webPoseRoll = 0; // In radians
-  bool _webPoseActive = false;
-  
   bool _arReady = false;
   bool _capturing = false;
-  bool _showSkeleton = false;
+  bool _showSkeleton = false; // Kept for UI toggle, though driven by JS on web
   
   late AnimationController _shutterAnimController;
   late Animation<double> _shutterScaleAnim;
@@ -59,54 +52,24 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
       CurvedAnimation(parent: _shutterAnimController, curve: Curves.easeInOut),
     );
 
-    _initializeCamera();
-    _initializePoseDetector();
-    
     if (kIsWeb) {
+      // NOTE: For Web, Three.js handles the camera AND the AR model natively.
+      // We only use Flutter for the transparent UI overlay.
       _initializeWebPose();
+    } else {
+      _initializeCamera();
+      _initializePoseDetector();
     }
   }
 
   void _initializeWebPose() {
+    // The WebPoseService JS interop listens to MediaPipe, but Three.js is rendering.
+    // We register the listener just so Flutter knows AR is "active", 
+    // but we don't need to rebuild the widget tree with coordinates anymore - Three.js handles it.
     WebPoseService().onPoseUpdate = (data) {
-      final landmarks = (data['landmarks'] as List<dynamic>?) ?? [];
-      final worldLandmarks = (data['worldLandmarks'] as List<dynamic>?) ?? [];
-      
-      if (landmarks.length > 12) {
-        final leftShoulder = landmarks[11]; // Mediapipe indices
-        final rightShoulder = landmarks[12];
-        
-        double yaw = 0;
-        double roll = 0;
-        
-        // Calculate Yaw using world landmarks for depth sensing
-        if (worldLandmarks.length > 12) {
-          final wLS = worldLandmarks[11];
-          final wRS = worldLandmarks[12];
-          // atan2(z_diff, x_diff) gives horizontal rotation
-          yaw = math.atan2(wLS['z'] - wRS['z'], wLS['x'] - wRS['x']);
-          // Correct for camera mirroring/offset - we want rotation relative to 0 (facing front)
-          yaw = yaw + (math.pi / 2); 
-          if (yaw > math.pi) yaw -= 2 * math.pi;
-          if (yaw < -math.pi) yaw += 2 * math.pi;
-        }
-        
-        // Calculate Roll (tilt) using normalized landmarks
-        roll = math.atan2(leftShoulder['y'] - rightShoulder['y'], leftShoulder['x'] - rightShoulder['x']);
-
-        if (mounted) {
-          setState(() {
-            _webPoseX = (leftShoulder['x'] + rightShoulder['x']) / 2;
-            _webPoseY = (leftShoulder['y'] + rightShoulder['y']) / 2;
-            
-            final dx = leftShoulder['x'] - rightShoulder['x'];
-            final dy = leftShoulder['y'] - rightShoulder['y'];
-            _webPoseWidth = vector.Vector2(dx, dy).length;
-            _webPoseYaw = yaw;
-            _webPoseRoll = roll;
-            _webPoseActive = true;
-          });
-        }
+      // We can use this to hide/show loading indicators if needed
+      if (!_arReady && mounted) {
+         setState(() => _arReady = true);
       }
     };
     WebPoseService().init();
@@ -122,6 +85,9 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
     super.dispose();
   }
 
+  // ==========================================
+  // MOBILE NATIVE LOGIC
+  // ==========================================
   Future<void> _initializeCamera() async {
     final cameras = await availableCameras();
     if (cameras.isEmpty) return;
@@ -147,27 +113,18 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
 
   void _initializePoseDetector() {
     if (kIsWeb) return;
-    final options = PoseDetectorOptions(
-      mode: PoseDetectionMode.stream,
-    );
+    final options = PoseDetectorOptions(mode: PoseDetectionMode.stream);
     _poseDetector = PoseDetector(options: options);
   }
 
   Future<void> _processCameraImage(CameraImage image) async {
     if (_isBusy || _poseDetector == null) return;
     _isBusy = true;
-
     try {
       final inputImage = _inputImageFromCameraImage(image);
       if (inputImage == null) return;
-      
       final poses = await _poseDetector!.processImage(inputImage);
-      
-      if (poses.isNotEmpty) {
-        _alignModelWithPose(poses.first);
-      }
-    } catch (e) {
-      debugPrint("Pose detection error: $e");
+      if (poses.isNotEmpty) _alignModelWithPose(poses.first);
     } finally {
       _isBusy = false;
     }
@@ -175,16 +132,9 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
 
   InputImage? _inputImageFromCameraImage(CameraImage image) {
     if (_cameraController == null) return null;
-
     final bytes = _concatenatePlanes(image.planes);
-    
-    final imageRotation = InputImageRotationValue.fromRawValue(
-      _cameraController!.description.sensorOrientation
-    ) ?? InputImageRotation.rotation0deg;
-
-    final imageFormat = InputImageFormatValue.fromRawValue(image.format.raw) 
-        ?? InputImageFormat.nv21;
-
+    final imageRotation = InputImageRotationValue.fromRawValue(_cameraController!.description.sensorOrientation) ?? InputImageRotation.rotation0deg;
+    final imageFormat = InputImageFormatValue.fromRawValue(image.format.raw) ?? InputImageFormat.nv21;
     return InputImage.fromBytes(
       bytes: bytes,
       metadata: InputImageMetadata(
@@ -198,9 +148,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
 
   Uint8List _concatenatePlanes(List<Plane> planes) {
     final WriteBuffer allBytes = WriteBuffer();
-    for (final Plane plane in planes) {
-      allBytes.putUint8List(plane.bytes);
-    }
+    for (final Plane plane in planes) allBytes.putUint8List(plane.bytes);
     return allBytes.done().buffer.asUint8List();
   }
 
@@ -208,7 +156,6 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
 
   void _alignModelWithPose(Pose pose) {
     if (_cameraController == null) return;
-    
     final leftShoulder = pose.landmarks[PoseLandmarkType.leftShoulder];
     final rightShoulder = pose.landmarks[PoseLandmarkType.rightShoulder];
     final previewSize = _cameraController!.value.previewSize;
@@ -216,10 +163,8 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
     if (leftShoulder != null && rightShoulder != null && previewSize != null) {
       final centerX = (leftShoulder.x + rightShoulder.x) / 2;
       final centerY = (leftShoulder.y + rightShoulder.y) / 2;
-      
       final arX = (centerX / previewSize.height) * 2 - 1.0; 
       final arY = -(centerY / previewSize.width) * 2 + 1.0;
-      
       final dx = leftShoulder.x - rightShoulder.x;
       final dy = leftShoulder.y - rightShoulder.y;
       final dist = vector.Vector2(dx, dy).length;
@@ -236,7 +181,6 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
           scale: scale,
           rotation: vector.Vector4(0, 1, 0, 3.14159), 
         ));
-        
         if (!_isModelPlaced) setState(() => _isModelPlaced = true);
       }
     }
@@ -251,27 +195,15 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
   void _onArKitViewCreated(ios_ar.ARKitController controller) {
     _arkitController = controller;
     setState(() => _arReady = true);
-    _arkitController?.onAddNodeForAnchor = _onArKitAnchorAdded;
-    _arkitController?.onUpdateNodeForAnchor = _onArKitAnchorUpdated;
+    _arkitController?.onAddNodeForAnchor = (anchor) {
+      if (anchor is ios_ar.ARKitBodyAnchor) _addBodyTrackedNode(anchor);
+    };
     _syncNativeSelectedItem();
-  }
-
-  void _onArKitAnchorAdded(ios_ar.ARKitAnchor anchor) {
-    if (anchor is ios_ar.ARKitBodyAnchor) {
-      _addBodyTrackedNode(anchor);
-    }
-  }
-
-  void _onArKitAnchorUpdated(ios_ar.ARKitAnchor anchor) {
-    if (anchor is ios_ar.ARKitBodyAnchor) {
-      _updateBodyTrackedNode(anchor);
-    }
   }
 
   void _addBodyTrackedNode(ios_ar.ARKitBodyAnchor anchor) {
     final selectedItem = context.read<TryOnProvider>().selectedItem;
     if (selectedItem?.modelPath == null) return;
-
     final node = ios_ar.ARKitReferenceNode(
       url: selectedItem!.displayModelPath ?? "",
       position: vector.Vector3(0, 0, 0), 
@@ -281,32 +213,29 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
     _arkitController?.add(node, parentNodeName: anchor.nodeName);
   }
 
-  void _updateBodyTrackedNode(ios_ar.ARKitBodyAnchor anchor) {}
-
   void _syncNativeSelectedItem() {
     final selectedItem = context.read<TryOnProvider>().selectedItem;
-    if (selectedItem != null && _arReady) {
-      _load3DModel(selectedItem);
-    }
+    if (selectedItem != null && _arReady) _load3DModel(selectedItem);
   }
 
+  // ==========================================
+  // SHARED LOGIC
+  // ==========================================
   void _load3DModel(ClothingItem item) {
     if (item.modelPath == null) return;
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      _loadAndroidModel(item);
-    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-      _loadIosModel(item);
+    
+    // Web: Pass the URL to Three.js engine via JS interop
+    if (kIsWeb) {
+      WebPoseService().loadModel(item.displayModelPath ?? "");
+      return;
     }
-  }
 
-  void _loadAndroidModel(ClothingItem item) {
-    if (_arCoreController == null) return;
-    _arCoreController?.removeNode(nodeName: "clothing_node");
-  }
-
-  void _loadIosModel(ClothingItem item) {
-    if (_arkitController == null) return;
-    _arkitController?.remove("clothing_node");
+    // Native App:
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      _arCoreController?.removeNode(nodeName: "clothing_node");
+    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+      _arkitController?.remove("clothing_node");
+    }
   }
 
   Future<void> _handleSelectItem(ClothingItem item) async {
@@ -315,9 +244,12 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
 
     if (provider.selectedItem?.id == item.id) {
       provider.setSelectedItem(null);
-      if (defaultTargetPlatform == TargetPlatform.android) {
+      if (kIsWeb) {
+         // Clear Three.js model (pass empty or handle null on JS side)
+         WebPoseService().loadModel("");
+      } else if (defaultTargetPlatform == TargetPlatform.android) {
         _arCoreController?.removeNode(nodeName: "clothing_node");
-      } else {
+      } else if (defaultTargetPlatform == TargetPlatform.iOS) {
         _arkitController?.remove("clothing_node");
       }
       return;
@@ -337,14 +269,13 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
       if (mounted) {
         setState(() => _capturing = false);
         final provider = context.read<TryOnProvider>();
-        provider.saveLook("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+        // Placeholder for actual capture logic
+        provider.saveLook("data:image/png;base64,...");
         HapticFeedback.lightImpact();
         _showSavedDialog();
       }
     });
   }
-
-  void _handleWebViewMessage(String data) {}
 
   void _showSavedDialog() {
     showDialog(
@@ -365,6 +296,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
   Future<void> _handleToggleSkeleton() async {
     HapticFeedback.selectionClick();
     setState(() => _showSkeleton = !_showSkeleton);
+    // Ideally ping JS to toggle landmarks visualizer here if needed
   }
 
   @override
@@ -372,11 +304,13 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
     final provider = context.watch<TryOnProvider>();
     final selectedItem = provider.selectedItem;
 
+    // For web, Scaffold must be transparent so the HTML5 canvas shows through
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: kIsWeb ? Colors.transparent : Colors.black,
       body: Stack(
         children: [
-          if (_isCameraReady && _cameraController != null)
+          // Native Device Camera
+          if (!kIsWeb && _isCameraReady && _cameraController != null)
             Positioned.fill(
               child: AspectRatio(
                 aspectRatio: _cameraController!.value.aspectRatio,
@@ -384,9 +318,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
               ),
             ),
 
-          if (kIsWeb && selectedItem?.displayModelPath != null && _webPoseActive)
-            _buildWebTrackedModel(selectedItem!),
-
+          // Native AR views
           if (!kIsWeb)
             Positioned.fill(
               child: (defaultTargetPlatform == TargetPlatform.android)
@@ -403,13 +335,11 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
                           configuration: ios_ar.ARKitConfiguration.bodyTracking,
                         )
                       : const Center(
-                          child: Text(
-                            "AR not supported on this platform",
-                            style: TextStyle(color: Colors.white),
-                          ),
+                          child: Text("AR not supported on this platform", style: TextStyle(color: Colors.white)),
                         ),
             ),
 
+          // OVERLAY UI (Rendered on top of Flutter Camera OR Web Three.js canvas)
           Positioned(
             top: MediaQuery.of(context).padding.top + 10,
             left: 16,
@@ -438,23 +368,20 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
                        children: [
                          Container(
                            width: 8, height: 8,
-                           decoration: BoxDecoration(
-                             shape: BoxShape.circle,
-                             color: AppColors.accent,
-                           ),
+                           decoration: BoxDecoration(shape: BoxShape.circle, color: AppColors.accent),
                          ),
                          const SizedBox(width: 5),
                          Text(
                            selectedItem.brand.toUpperCase(),
-                           style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.accent),
+                           style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.accent),
                          ),
                          const SizedBox(width: 5),
-                         Text("·", style: TextStyle(color: Colors.white54, fontSize: 11)),
+                         const Text("·", style: TextStyle(color: Colors.white54, fontSize: 11)),
                          const SizedBox(width: 5),
                          Flexible(
                            child: Text(
                              selectedItem.name,
-                             style: TextStyle(fontSize: 12, color: Colors.white),
+                             style: const TextStyle(fontSize: 12, color: Colors.white),
                              maxLines: 1,
                              overflow: TextOverflow.ellipsis,
                            ),
@@ -477,11 +404,11 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
                 bottom: MediaQuery.of(context).padding.bottom + 20, 
                 top: 80,
               ),
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, const Color(0xEB0D0D0D)],
+                  colors: [Colors.transparent, Color(0xEB0D0D0D)],
                 ),
               ),
               child: Column(
@@ -534,10 +461,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
                                 ? const CircularProgressIndicator(color: AppColors.accent)
                                 : Container(
                                     width: 52, height: 52,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle, 
-                                      color: Colors.white
-                                    ),
+                                    decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.white),
                                   ),
                             ),
                           ),
@@ -555,10 +479,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
                         children: [
                           Icon(Icons.touch_app, size: 13, color: Colors.white.withOpacity(0.55)),
                           const SizedBox(width: 6),
-                          Text(
-                            "Select a piece below to try it on",
-                            style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.55)),
-                          )
+                          Text("Select a piece below to try it on", style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.55)))
                         ],
                       ),
                     ),
@@ -567,44 +488,6 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildWebTrackedModel(ClothingItem item) {
-    final size = MediaQuery.of(context).size;
-    final double x = _webPoseX * size.width;
-    final double y = _webPoseY * size.height;
-    
-    // Width based on shoulder distance with high fidelity scaling
-    final double shirtWidth = _webPoseWidth * size.width * 2.8; 
-    final double shirtHeight = shirtWidth * 1.35; 
-    
-    // Convert yaw to degrees for ModelViewer - Clamping prevents "glitching" at extreme angles
-    final double yawDeg = (_webPoseYaw * 180 / math.pi).clamp(-45, 45);
-    
-    return Positioned(
-      left: x - (shirtWidth / 2),
-      top: y - (shirtHeight * 0.22), 
-      width: shirtWidth,
-      height: shirtHeight,
-      child: IgnorePointer(
-        child: Transform(
-          alignment: Alignment.center,
-          transform: Matrix4.identity()
-            ..setEntry(3, 2, 0.001) // Perspective dist
-            ..rotateZ(_webPoseRoll), // Handle body lean/tilt
-          child: ModelViewer(
-            src: item.displayModelPath ?? "",
-            alt: item.name,
-            ar: false,
-            autoRotate: false,
-            cameraControls: false,
-            backgroundColor: Colors.transparent,
-            cameraOrbit: "${yawDeg}deg 90deg 105%", 
-            fieldOfView: "30deg",
-          ),
-        ),
       ),
     );
   }
@@ -625,25 +508,8 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
         child: Icon(
           icon, 
           size: 19, 
-          color: disabled 
-            ? Colors.white.withOpacity(0.3) 
-            : (isActive ? AppColors.accent : Colors.white)
+          color: disabled ? Colors.white.withOpacity(0.3) : (isActive ? AppColors.accent : Colors.white)
         ),
-      ),
-    );
-  }
-
-  Widget _buildSideBtn({required IconData icon, bool disabled = false, required VoidCallback onTap}) {
-    return GestureDetector(
-      onTap: disabled ? null : onTap,
-      child: Container(
-        width: 44, height: 44,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: Colors.white.withOpacity(0.12),
-        ),
-        alignment: Alignment.center,
-        child: Icon(icon, size: 22, color: disabled ? Colors.white.withOpacity(0.3) : Colors.white),
       ),
     );
   }
@@ -678,10 +544,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
                   top: -5, right: -5,
                   child: Container(
                     width: 20, height: 20,
-                    decoration: BoxDecoration(
-                      color: AppColors.accent,
-                      shape: BoxShape.circle,
-                    ),
+                    decoration: const BoxDecoration(color: AppColors.accent, shape: BoxShape.circle),
                     alignment: Alignment.center,
                     child: const Icon(Icons.check, size: 11, color: Colors.white),
                   ),
@@ -694,12 +557,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
             width: 70,
             child: Text(
               item.brand,
-              style: TextStyle(
-                fontFamily: "Inter",
-                fontSize: 10,
-                fontWeight: FontWeight.w500,
-                color: Colors.white.withOpacity(0.7),
-              ),
+              style: TextStyle(fontFamily: "Inter", fontSize: 10, fontWeight: FontWeight.w500, color: Colors.white.withOpacity(0.7)),
               maxLines: 1,
               textAlign: TextAlign.center,
               overflow: TextOverflow.ellipsis,
