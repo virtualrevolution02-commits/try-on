@@ -6,9 +6,11 @@ import 'providers/tryon_provider.dart';
 import 'services/database_service.dart';
 import 'services/media_service.dart';
 import 'constants/colors.dart';
+import 'utils/web_registry.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  registerWebARView();
   
   try {
     await dotenv.load(fileName: ".env");

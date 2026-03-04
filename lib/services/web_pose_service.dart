@@ -1,13 +1,5 @@
-import 'dart:convert';
-import 'package:js/js.dart';
 import 'package:flutter/foundation.dart';
-
-@JS('window.flutter_web_pose')
-class WebPose {
-  external static void init();
-  external static set onPoseDetected(Function(String) callback);
-  external static void loadModel(String url);
-}
+import 'web_pose_helper.dart';
 
 class WebPoseService {
   static final WebPoseService _instance = WebPoseService._internal();
@@ -18,13 +10,11 @@ class WebPoseService {
 
   void init() {
     if (!kIsWeb) return;
-    
     try {
-      WebPose.onPoseDetected = allowInterop((String jsonPose) {
-        final Map<String, dynamic> data = jsonDecode(jsonPose);
+      setWebPoseCallback((data) {
         onPoseUpdate?.call(data);
       });
-      WebPose.init();
+      initWebPose();
       debugPrint("WebPoseService initialized");
     } catch (e) {
       debugPrint("WebPoseService init error: $e");
@@ -34,7 +24,7 @@ class WebPoseService {
   void loadModel(String url) {
     if (!kIsWeb) return;
     try {
-      WebPose.loadModel(url);
+      loadWebPoseModel(url);
     } catch (e) {
       debugPrint("WebPoseService loadModel error: $e");
     }

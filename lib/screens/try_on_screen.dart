@@ -309,6 +309,12 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
       backgroundColor: kIsWeb ? Colors.transparent : Colors.black,
       body: Stack(
         children: [
+          // Web 3D AR Canvas Hole-Punch
+          if (kIsWeb)
+            const Positioned.fill(
+              child: HtmlElementView(viewType: 'ar-canvas-view'),
+            ),
+
           // Native Device Camera
           if (!kIsWeb && _isCameraReady && _cameraController != null)
             Positioned.fill(
