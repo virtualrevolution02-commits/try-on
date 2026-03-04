@@ -1,7 +1,7 @@
-import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../models/clothing_item.dart';
+import '../services/database_service.dart';
+import '../constants/clothing_data.dart'; // Fallback for safety
 
 class SavedLook {
   final String id;
@@ -40,16 +40,42 @@ class SavedLook {
 class TryOnProvider with ChangeNotifier {
   static const String _savedLooksKey = "tryon_saved_looks";
 
-  ClothingItem? _selectedItem;
-  String _selectedColor = "";
-  String _selectedSize = "";
-  List<SavedLook> _savedLooks = [];
+  List<ClothingItem> _clothingItems = [];
+  bool _isLoading = true;
 
   TryOnProvider() {
     _loadSavedLooks();
-    // Auto-select Premium Sweater Pack (ID 0) on startup
-    if (CLOTHING_DATA.isNotEmpty) {
-      setSelectedItem(CLOTHING_DATA.first);
+    _initializeData();
+  }
+
+  List<ClothingItem> get clothingItems => _clothingItems;
+  bool get isLoading => _isLoading;
+
+  Future<void> _initializeData() async {
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      _clothingItems = await DatabaseService().getClothingItems();
+      
+      // Fallback if DB is empty
+      if (_clothingItems.isEmpty) {
+        _clothingItems = CLOTHING_DATA;
+      }
+
+      // Auto-select first item if available
+      if (_clothingItems.isNotEmpty) {
+        setSelectedItem(_clothingItems.first);
+      }
+    } catch (e) {
+      debugPrint("Database fetch failed, using fallback: $e");
+      _clothingItems = CLOTHING_DATA;
+      if (_clothingItems.isNotEmpty) {
+        setSelectedItem(_clothingItems.first);
+      }
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
   }
 

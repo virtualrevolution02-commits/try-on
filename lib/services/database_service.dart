@@ -1,0 +1,63 @@
+import 'package:postgres/postgres.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import '../models/clothing_item.dart';
+
+class DatabaseService {
+  static final DatabaseService _instance = DatabaseService._internal();
+  factory DatabaseService() => _instance;
+  DatabaseService._internal();
+
+  Connection? _connection;
+
+  Future<void> connect() async {
+    final url = dotenv.get('POSTGRES_URL');
+    try {
+      _connection = await Connection.open(
+        Endpoint.parse(url),
+        settings: const ConnectionSettings(sslMode: SslMode.require),
+      );
+      print('Database connected successfully');
+    } catch (e) {
+      print('Database connection failed: $e');
+      rethrow;
+    }
+  }
+
+  Future<List<ClothingItem>> getClothingItems() async {
+    if (_connection == null) await connect();
+
+    try {
+      final results = await _connection!.execute('SELECT * FROM clothing_items');
+      return results.map((row) {
+        // Map database row to ClothingItem model
+        // Assuming table columns match model fields
+        return ClothingItem(
+          id: row[0].toString(),
+          name: row[1] as String,
+          brand: row[2] as String,
+          price: (row[3] as num).toDouble(),
+          image: row[4] as String,
+          category: row[5] as String,
+          description: row[6] as String,
+          modelPath: row[7] as String?,
+          isFeatured: row[8] as bool? ?? false,
+          isNew: row[9] as bool? ?? false,
+          rating: (row[10] as num? ?? 5.0).toDouble(),
+          reviewCount: row[11] as int? ?? 0,
+          sizes: (row[12] as String? ?? "M,L,XL").split(','),
+          cloudinaryPublicId: row.columnDescriptions.any((c) => c.columnName == 'cloudinary_public_id') ? row[row.columnDescriptions.indexWhere((c) => c.columnName == 'cloudinary_public_id')] as String? : null,
+          cloudinaryModelId: row.columnDescriptions.any((c) => c.columnName == 'cloudinary_model_id') ? row[row.columnDescriptions.indexWhere((c) => c.columnName == 'cloudinary_model_id')] as String? : null,
+          colors: [],
+        );
+      }).toList();
+    } catch (e) {
+      print('Error fetching clothing items: $e');
+      return []; // Return empty or fallback
+    }
+  }
+
+  Future<void> close() async {
+    await _connection?.close();
+    _connection = null;
+  }
+}

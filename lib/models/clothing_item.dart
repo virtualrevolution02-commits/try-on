@@ -1,3 +1,5 @@
+import '../services/media_service.dart';
+
 class ClothingColor {
   final String name;
   final String hex;
@@ -31,6 +33,8 @@ class ClothingItem {
   final List<String> sizes;
   final String description;
   final List<ClothingColor> colors;
+  final String? cloudinaryPublicId;
+  final String? cloudinaryModelId;
 
   ClothingItem({
     required this.id,
@@ -42,6 +46,8 @@ class ClothingItem {
     this.isFeatured = false,
     this.isNew = false,
     this.modelPath,
+    this.cloudinaryPublicId,
+    this.cloudinaryModelId,
     required this.rating,
     required this.reviewCount,
     required this.sizes,
@@ -67,6 +73,8 @@ class ClothingItem {
       sizes: List<String>.from(json['sizes'] ?? []),
       description: json['description'] ?? '',
       modelPath: json['modelPath'],
+      cloudinaryPublicId: json['cloudinaryPublicId'],
+      cloudinaryModelId: json['cloudinaryModelId'],
       colors: parsedColors,
     );
   }
@@ -85,6 +93,22 @@ class ClothingItem {
     'sizes': sizes,
     'description': description,
     'modelPath': modelPath,
+    'cloudinaryPublicId': cloudinaryPublicId,
+    'cloudinaryModelId': cloudinaryModelId,
     'colors': colors.map((c) => c.toJson()).toList(),
   };
+
+  String get displayImage {
+    if (cloudinaryPublicId != null && cloudinaryPublicId!.isNotEmpty) {
+      return MediaService().getImageUrl(cloudinaryPublicId!);
+    }
+    return image;
+  }
+
+  String? get displayModelPath {
+    if (cloudinaryModelId != null && cloudinaryModelId!.isNotEmpty) {
+      return MediaService().getModelUrl(cloudinaryModelId!);
+    }
+    return modelPath;
+  }
 }

@@ -173,8 +173,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
         
         _arCoreController?.removeNode(nodeName: "clothing_node");
         _arCoreController?.addArCoreNode(android_ar.ArCoreReferenceNode(
-          name: "clothing_node",
-          objectUrl: context.read<TryOnProvider>().selectedItem?.modelPath ?? "",
+          objectUrl: context.read<TryOnProvider>().selectedItem?.displayModelPath ?? "",
           position: pos,
           scale: scale,
           rotation: vector.Vector4(0, 1, 0, 3.14159), 
@@ -221,7 +220,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
     if (selectedItem?.modelPath == null) return;
 
     final node = ios_ar.ARKitReferenceNode(
-      url: selectedItem!.modelPath!,
+      url: selectedItem!.displayModelPath ?? "",
       // Scaling and positioning relative to the spine/chest coordinate
       // The body anchor transform represents the root position of the body
       position: vector.Vector3(0, 0, 0), 
@@ -351,11 +350,10 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
             ),
 
           // 2. Native AR View / 3D Overlay
-          Positioned.fill(
             child: kIsWeb
-                ? (selectedItem?.modelPath != null
+                ? (selectedItem?.displayModelPath != null
                     ? ModelViewer(
-                        src: selectedItem!.modelPath!,
+                        src: selectedItem!.displayModelPath!,
                         alt: selectedItem.name,
                         ar: true,
                         autoRotate: false,
@@ -468,17 +466,19 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
                   Container(
                     height: 90,
                     margin: const EdgeInsets.only(bottom: 18),
-                    child: ListView.separated(
-                      padding: const EdgeInsets.symmetric(horizontal: 18),
-                      scrollDirection: Axis.horizontal,
-                      itemCount: CLOTHING_DATA.length,
-                      separatorBuilder: (_,__) => const SizedBox(width: 12),
-                      itemBuilder: (context, index) {
-                        final item = CLOTHING_DATA[index];
-                        final isSelected = selectedItem?.id == item.id;
-                        return _buildCatalogItem(item, isSelected);
-                      },
-                    ),
+                    child: provider.isLoading
+                      ? const Center(child: CircularProgressIndicator(color: AppColors.accent))
+                      : ListView.separated(
+                          padding: const EdgeInsets.symmetric(horizontal: 18),
+                          scrollDirection: Axis.horizontal,
+                          itemCount: provider.clothingItems.length,
+                          separatorBuilder: (_,__) => const SizedBox(width: 12),
+                          itemBuilder: (context, index) {
+                            final item = provider.clothingItems[index];
+                            final isSelected = selectedItem?.id == item.id;
+                            return _buildCatalogItem(item, isSelected);
+                          },
+                        ),
                   ),
 
                   // Capture Row
@@ -604,7 +604,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
                 width: 70, height: 70,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(14),
-                  image: DecorationImage(image: NetworkImage(item.image), fit: BoxFit.cover),
+                  image: DecorationImage(image: NetworkImage(item.displayImage), fit: BoxFit.cover),
                 ),
               ),
               if (isSelected) ...[

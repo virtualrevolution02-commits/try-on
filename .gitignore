@@ -27,3 +27,4 @@ lib/generated_plugin_registrant.dart
 *.pyc
 *.swp
 .DS_Store
+.env

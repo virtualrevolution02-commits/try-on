@@ -1,0 +1,15 @@
+{
+    "version": 2,
+    "rewrites": [
+        {
+            "source": "/(.*)",
+            "destination": "/web/$1"
+        },
+        {
+            "source": "/web/(.*)",
+            "destination": "/web/index.html"
+        }
+    ],
+    "cleanUrls": true,
+    "framework": "flutter"
+}
