@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   Dimensions,
   Alert,
 } from "react-native";
-import { CameraView, useCameraPermissions } from "expo-camera";
+import { WebView } from "react-native-webview";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,18 +18,27 @@ import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withSpring,
-  withTiming,
   withSequence,
   FadeIn,
-  FadeOut,
 } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import Colors from "@/constants/colors";
 import { CLOTHING_DATA, ClothingItem } from "@/constants/clothing-data";
 import { useTryOn } from "@/context/TryOnContext";
+import { getApiUrl } from "@/lib/query-client";
 import { router } from "expo-router";
 
 const { width, height } = Dimensions.get("window");
+
+// The AR page URL from our Express backend
+function getArUrl() {
+  try {
+    const base = getApiUrl();
+    return `${base.replace(/\/$/, "")}/ar-tryon`;
+  } catch {
+    return "about:blank";
+  }
+}
 
 function CatalogItem({
   item,
@@ -46,245 +55,273 @@ function CatalogItem({
   }));
 
   const handlePress = () => {
-    scale.value = withSequence(withSpring(0.9), withSpring(1));
+    scale.value = withSequence(withSpring(0.88, { damping: 14 }), withSpring(1, { damping: 14 }));
     onPress();
   };
 
   return (
     <TouchableOpacity onPress={handlePress} activeOpacity={0.9}>
-      <Animated.View style={[styles.catalogItem, isSelected && styles.catalogItemSelected, animStyle]}>
-        <Image source={{ uri: item.image }} style={styles.catalogItemImage} contentFit="cover" />
-        {isSelected && (
-          <View style={styles.catalogItemCheck}>
-            <Ionicons name="checkmark" size={12} color="#fff" />
-          </View>
-        )}
+      <Animated.View style={animStyle}>
+        <View style={[styles.catalogItem, isSelected && styles.catalogItemSelected]}>
+          <Image source={{ uri: item.image }} style={styles.catalogItemImage} contentFit="cover" transition={200} />
+          {isSelected && (
+            <View style={styles.selectedRing} />
+          )}
+          {isSelected && (
+            <View style={styles.catalogItemCheck}>
+              <Ionicons name="checkmark" size={11} color="#fff" />
+            </View>
+          )}
+        </View>
+        <Text style={styles.catalogItemBrand} numberOfLines={1}>{item.brand}</Text>
       </Animated.View>
-      <Text style={styles.catalogItemName} numberOfLines={1}>
-        {item.brand}
-      </Text>
     </TouchableOpacity>
-  );
-}
-
-function OverlayClothing({ item }: { item: ClothingItem }) {
-  const opacity = useSharedValue(0);
-  const translateY = useSharedValue(20);
-
-  const animStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [{ translateY: translateY.value }],
-  }));
-
-  useEffect(() => {
-    opacity.value = withTiming(0.82, { duration: 300 });
-    translateY.value = withSpring(0, { damping: 18 });
-  }, [item.id]);
-
-  return (
-    <Animated.View style={[styles.overlayClothing, animStyle]}>
-      <Image
-        source={{ uri: item.image }}
-        style={styles.overlayImage}
-        contentFit="contain"
-      />
-    </Animated.View>
   );
 }
 
 export default function TryOnScreen() {
   const insets = useSafeAreaInsets();
-  const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef = useRef<CameraView>(null);
+  const webViewRef = useRef<WebView>(null);
   const { selectedItem, setSelectedItem, saveLook } = useTryOn();
-  const [facing, setFacing] = useState<"front" | "back">("front");
-  const [flash, setFlash] = useState(false);
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [captureFlash, setCaptureFlash] = useState(false);
+  const [webViewReady, setWebViewReady] = useState(false);
+  const [capturing, setCapturing] = useState(false);
+  const [showSkeleton, setShowSkeleton] = useState(false);
+  const arUrl = getArUrl();
 
   const shutterScale = useSharedValue(1);
   const shutterStyle = useAnimatedStyle(() => ({
     transform: [{ scale: shutterScale.value }],
   }));
 
-  const flashStyle = useAnimatedStyle(() => ({
-    opacity: captureFlash ? 0.7 : 0,
-  }));
+  // Send a message to the WebView
+  const sendToWebView = useCallback((msg: object) => {
+    if (!webViewRef.current) return;
+    const js = `
+      (function() {
+        try {
+          window.dispatchEvent(new MessageEvent('message', { data: ${JSON.stringify(JSON.stringify(msg))} }));
+        } catch(e) {}
+      })();
+      true;
+    `;
+    webViewRef.current.injectJavaScript(js);
+  }, []);
 
-  const handleCapture = async () => {
-    if (!cameraRef.current || isCapturing) return;
-    setIsCapturing(true);
-    shutterScale.value = withSequence(withSpring(0.85), withSpring(1));
-    setCaptureFlash(true);
-    setTimeout(() => setCaptureFlash(false), 150);
+  // Handle clothing item selection
+  const handleSelectItem = useCallback(async (item: ClothingItem) => {
+    await Haptics.selectionAsync();
+
+    if (selectedItem?.id === item.id) {
+      setSelectedItem(null);
+      sendToWebView({ type: "clearClothing" });
+      return;
+    }
+
+    setSelectedItem(item);
+    const activeColor = item.colors[0];
+    sendToWebView({
+      type: "setClothing",
+      item: {
+        id: item.id,
+        imageUrl: item.image,
+        category: item.category,
+        name: item.name,
+        price: item.price,
+        colorHex: activeColor?.hex ?? "#C9A96E",
+      },
+    });
+  }, [selectedItem, sendToWebView, setSelectedItem]);
+
+  // Trigger photo capture in WebView
+  const handleCapture = useCallback(async () => {
+    if (capturing || !selectedItem) return;
+    shutterScale.value = withSequence(
+      withSpring(0.85, { damping: 14 }),
+      withSpring(1, { damping: 14 })
+    );
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setCapturing(true);
+    sendToWebView({ type: "capture" });
+    // Reset capturing after timeout fallback
+    setTimeout(() => setCapturing(false), 3000);
+  }, [capturing, selectedItem, sendToWebView, shutterScale]);
 
+  // Handle messages from WebView (photo data, etc.)
+  const handleWebViewMessage = useCallback(async (event: any) => {
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85 });
-      if (photo && selectedItem) {
-        saveLook(photo.uri);
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert("Look saved!", "Your try-on has been saved to your collection.", [
-          { text: "View Saved", onPress: () => router.push("/saved") },
-          { text: "Continue", style: "cancel" },
-        ]);
+      const msg = JSON.parse(event.nativeEvent.data);
+      if (msg.type === "photo" && msg.data) {
+        setCapturing(false);
+        if (selectedItem) {
+          saveLook(msg.data);
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          Alert.alert(
+            "Look saved!",
+            "Your try-on look has been saved to your collection.",
+            [
+              { text: "View Saved", onPress: () => router.push("/saved") },
+              { text: "Continue", style: "cancel" },
+            ]
+          );
+        }
       }
     } catch (e) {
-      console.error("Capture failed", e);
-    } finally {
-      setIsCapturing(false);
+      setCapturing(false);
     }
-  };
+  }, [selectedItem, saveLook]);
 
-  const handleSelectItem = async (item: ClothingItem) => {
+  const handleToggleSkeleton = useCallback(async () => {
     await Haptics.selectionAsync();
-    setSelectedItem(item.id === selectedItem?.id ? null : item);
-  };
+    setShowSkeleton(prev => !prev);
+    sendToWebView({ type: "toggleSkeleton" });
+  }, [sendToWebView]);
 
-  if (!permission) {
-    return (
-      <View style={[styles.container, styles.center, { paddingTop: insets.top }]}>
-        <View style={styles.loadingDot} />
-      </View>
-    );
-  }
-
-  if (!permission.granted) {
-    return (
-      <View style={[styles.container, styles.center, { paddingTop: Platform.OS === "web" ? 67 : insets.top }]}>
-        <View style={styles.permissionContainer}>
-          <View style={styles.permissionIcon}>
-            <Ionicons name="camera" size={40} color={Colors.text} />
-          </View>
-          <Text style={styles.permissionTitle}>Camera Access</Text>
-          <Text style={styles.permissionText}>
-            Enable camera to virtually try on clothes in real-time
-          </Text>
-          <TouchableOpacity style={styles.permissionBtn} onPress={requestPermission}>
-            <Text style={styles.permissionBtnText}>Enable Camera</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
+  const handleWebViewLoad = useCallback(() => {
+    setWebViewReady(true);
+    // If item was previously selected, re-send it
+    if (selectedItem) {
+      setTimeout(() => {
+        const activeColor = selectedItem.colors[0];
+        sendToWebView({
+          type: "setClothing",
+          item: {
+            id: selectedItem.id,
+            imageUrl: selectedItem.image,
+            category: selectedItem.category,
+            name: selectedItem.name,
+            price: selectedItem.price,
+            colorHex: activeColor?.hex ?? "#C9A96E",
+          },
+        });
+      }, 1500);
+    }
+  }, [selectedItem, sendToWebView]);
 
   return (
     <View style={styles.container}>
-      {Platform.OS !== "web" ? (
-        <CameraView
-          ref={cameraRef}
-          style={StyleSheet.absoluteFill}
-          facing={facing}
-          flash={flash ? "on" : "off"}
-        />
-      ) : (
-        <View style={[StyleSheet.absoluteFill, styles.webCameraPlaceholder]}>
-          <Ionicons name="camera" size={60} color={Colors.textTertiary} />
-          <Text style={styles.webPlaceholderText}>Camera preview</Text>
-        </View>
-      )}
+      {/* AR WebView — full screen, works on iOS, Android, and Web */}
+      <WebView
+        ref={webViewRef}
+        source={{ uri: arUrl }}
+        style={StyleSheet.absoluteFill}
+        onLoad={handleWebViewLoad}
+        onMessage={handleWebViewMessage}
+        javaScriptEnabled
+        domStorageEnabled
+        allowsInlineMediaPlayback
+        mediaPlaybackRequiresUserAction={false}
+        allowsFullscreenVideo={false}
+        originWhitelist={["*"]}
+        mixedContentMode="compatibility"
+        onError={(e) => console.warn("WebView error:", e.nativeEvent)}
+      />
 
-      {captureFlash && (
-        <Animated.View style={[StyleSheet.absoluteFill, styles.captureFlash, flashStyle]} />
-      )}
+      {/* Top controls */}
+      <View style={[styles.topBar, { paddingTop: Platform.OS === "web" ? 70 : insets.top + 10 }]}>
+        <TouchableOpacity
+          style={[styles.topBtn, showSkeleton && styles.topBtnActive]}
+          onPress={handleToggleSkeleton}
+        >
+          <Ionicons
+            name="body-outline"
+            size={19}
+            color={showSkeleton ? Colors.accent : Colors.white}
+          />
+        </TouchableOpacity>
 
-      {selectedItem && <OverlayClothing item={selectedItem} />}
-
-      <LinearGradient
-        colors={["rgba(13,13,13,0.55)", "transparent"]}
-        style={[styles.topGradient, { paddingTop: Platform.OS === "web" ? 67 : insets.top }]}
-      >
-        <View style={styles.topBar}>
-          <TouchableOpacity
-            style={styles.topBtn}
-            onPress={() => setFlash(!flash)}
-          >
-            <Ionicons
-              name={flash ? "flash" : "flash-off"}
-              size={20}
-              color={Colors.white}
-            />
-          </TouchableOpacity>
-
-          {selectedItem && (
-            <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(200)}>
-              <View style={styles.tryingOnChip}>
-                <Text style={styles.tryingOnText}>{selectedItem.brand}</Text>
-                <Text style={styles.tryingOnName}>{selectedItem.name}</Text>
-              </View>
-            </Animated.View>
-          )}
-
-          <TouchableOpacity
-            style={styles.topBtn}
-            onPress={() => setFacing(facing === "front" ? "back" : "front")}
-          >
-            <Ionicons name="camera-reverse-outline" size={22} color={Colors.white} />
-          </TouchableOpacity>
-        </View>
-      </LinearGradient>
-
-      <LinearGradient
-        colors={["transparent", "rgba(13,13,13,0.85)"]}
-        style={[styles.bottomGradient, { paddingBottom: Platform.OS === "web" ? 100 : insets.bottom + 90 }]}
-      >
-        {!selectedItem && (
-          <Animated.View entering={FadeIn.duration(400)} style={styles.hintContainer}>
-            <Ionicons name="hand-left-outline" size={16} color="rgba(255,255,255,0.7)" />
-            <Text style={styles.hintText}>Select a piece below to try on</Text>
+        {selectedItem && (
+          <Animated.View entering={FadeIn.duration(250)} style={styles.activeChip}>
+            <View style={[styles.chipDot, { backgroundColor: selectedItem.colors[0]?.hex ?? Colors.accent }]} />
+            <Text style={styles.chipBrand}>{selectedItem.brand}</Text>
+            <Text style={styles.chipSeparator}>·</Text>
+            <Text style={styles.chipName} numberOfLines={1}>{selectedItem.name}</Text>
           </Animated.View>
         )}
 
-        <View style={styles.catalogContainer}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.catalogContent}
-          >
-            {CLOTHING_DATA.map((item) => (
-              <CatalogItem
-                key={item.id}
-                item={item}
-                isSelected={selectedItem?.id === item.id}
-                onPress={() => handleSelectItem(item)}
-              />
-            ))}
-          </ScrollView>
-        </View>
+        <TouchableOpacity
+          style={styles.topBtn}
+          onPress={() => selectedItem && router.push({ pathname: "/product/[id]", params: { id: selectedItem.id } })}
+          disabled={!selectedItem}
+        >
+          <Ionicons
+            name="information-circle-outline"
+            size={20}
+            color={selectedItem ? Colors.white : "rgba(255,255,255,0.3)"}
+          />
+        </TouchableOpacity>
+      </View>
 
+      {/* Bottom gradient + catalog + shutter */}
+      <LinearGradient
+        colors={["transparent", "rgba(13,13,13,0.92)"]}
+        style={[
+          styles.bottomGradient,
+          { paddingBottom: Platform.OS === "web" ? 90 : insets.bottom + 80 },
+        ]}
+        pointerEvents="box-none"
+      >
+        {/* Catalog */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.catalogContent}
+          style={styles.catalog}
+        >
+          {CLOTHING_DATA.map((item) => (
+            <CatalogItem
+              key={item.id}
+              item={item}
+              isSelected={selectedItem?.id === item.id}
+              onPress={() => handleSelectItem(item)}
+            />
+          ))}
+        </ScrollView>
+
+        {/* Category filter chips */}
         <View style={styles.captureRow}>
-          {selectedItem ? (
-            <TouchableOpacity
-              style={styles.infoBtn}
-              onPress={() => router.push({ pathname: "/product/[id]", params: { id: selectedItem.id } })}
-            >
-              <Ionicons name="information-circle-outline" size={22} color={Colors.white} />
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.infoBtn} />
-          )}
+          <TouchableOpacity
+            style={styles.sideBtn}
+            onPress={() => {
+              setSelectedItem(null);
+              sendToWebView({ type: "clearClothing" });
+            }}
+          >
+            <Ionicons
+              name="close-circle-outline"
+              size={22}
+              color={selectedItem ? Colors.white : "rgba(255,255,255,0.3)"}
+            />
+          </TouchableOpacity>
 
           <Animated.View style={shutterStyle}>
             <TouchableOpacity
-              style={[styles.shutterBtn, !selectedItem && styles.shutterBtnDisabled]}
+              style={[styles.shutterBtn, (!selectedItem || capturing) && styles.shutterBtnDisabled]}
               onPress={handleCapture}
-              disabled={!selectedItem || isCapturing}
+              disabled={!selectedItem || capturing}
+              activeOpacity={0.85}
             >
-              <View style={styles.shutterInner} />
+              {capturing ? (
+                <View style={styles.capturingIndicator} />
+              ) : (
+                <View style={styles.shutterInner} />
+              )}
             </TouchableOpacity>
           </Animated.View>
 
-          {selectedItem ? (
-            <TouchableOpacity
-              style={styles.clearBtn}
-              onPress={() => setSelectedItem(null)}
-            >
-              <Ionicons name="close" size={20} color={Colors.white} />
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.clearBtn} />
-          )}
+          <TouchableOpacity
+            style={styles.sideBtn}
+            onPress={() => router.push("/saved")}
+          >
+            <Ionicons name="images-outline" size={22} color={Colors.white} />
+          </TouchableOpacity>
         </View>
+
+        {!selectedItem && (
+          <Animated.View entering={FadeIn.duration(500)} style={styles.hint}>
+            <Ionicons name="hand-left-outline" size={13} color="rgba(255,255,255,0.55)" />
+            <Text style={styles.hintText}>Select a piece below to try it on</Text>
+          </Animated.View>
+        )}
       </LinearGradient>
     </View>
   );
@@ -295,112 +332,111 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.black,
   },
-  center: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  webCameraPlaceholder: {
-    backgroundColor: "#1A1A1A",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-  },
-  webPlaceholderText: {
-    fontFamily: "Inter_400Regular",
-    fontSize: 14,
-    color: Colors.textTertiary,
-  },
-  captureFlash: {
-    backgroundColor: Colors.white,
-    zIndex: 20,
-  },
-  topGradient: {
+  topBar: {
     position: "absolute",
     top: 0,
     left: 0,
     right: 0,
-    height: 140,
-    zIndex: 10,
-  },
-  topBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    zIndex: 50,
   },
   topBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "rgba(0,0,0,0.45)",
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
   },
-  tryingOnChip: {
-    backgroundColor: "rgba(255,255,255,0.15)",
+  topBtnActive: {
+    backgroundColor: "rgba(201,169,110,0.2)",
+    borderColor: "rgba(201,169,110,0.4)",
+  },
+  activeChip: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    marginHorizontal: 10,
+    backgroundColor: "rgba(0,0,0,0.5)",
     borderRadius: 100,
     paddingHorizontal: 14,
-    paddingVertical: 7,
-    alignItems: "center",
-    backdropFilter: "blur(10px)",
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    maxWidth: width - 120,
+    alignSelf: "center",
   },
-  tryingOnText: {
-    fontFamily: "Inter_500Medium",
-    fontSize: 10,
+  chipDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  chipBrand: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 11,
     color: Colors.accent,
-    letterSpacing: 0.8,
+    letterSpacing: 0.5,
     textTransform: "uppercase",
   },
-  tryingOnName: {
-    fontFamily: "Inter_600SemiBold",
+  chipSeparator: {
+    fontSize: 11,
+    color: "rgba(255,255,255,0.4)",
+  },
+  chipName: {
+    fontFamily: "Inter_400Regular",
     fontSize: 12,
     color: Colors.white,
+    flexShrink: 1,
   },
   bottomGradient: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
-    paddingTop: 60,
-    zIndex: 10,
+    paddingTop: 80,
+    zIndex: 30,
   },
-  hintContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    marginBottom: 16,
-  },
-  hintText: {
-    fontFamily: "Inter_400Regular",
-    fontSize: 13,
-    color: "rgba(255,255,255,0.7)",
-  },
-  catalogContainer: {
-    marginBottom: 20,
+  catalog: {
+    marginBottom: 18,
   },
   catalogContent: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 18,
     gap: 12,
+    paddingBottom: 4,
   },
   catalogItem: {
-    width: 72,
+    width: 70,
     alignItems: "center",
-    gap: 4,
+    gap: 5,
+    position: "relative",
   },
   catalogItemSelected: {},
   catalogItemImage: {
-    width: 72,
-    height: 72,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "transparent",
+    width: 70,
+    height: 70,
+    borderRadius: 14,
+  },
+  selectedRing: {
+    position: "absolute",
+    top: -2,
+    left: -2,
+    right: -2,
+    bottom: -2,
+    borderRadius: 16,
+    borderWidth: 2.5,
+    borderColor: Colors.accent,
   },
   catalogItemCheck: {
     position: "absolute",
-    top: -4,
-    right: -4,
+    top: -5,
+    right: -5,
     width: 20,
     height: 20,
     borderRadius: 10,
@@ -408,24 +444,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  catalogItemName: {
+  catalogItemBrand: {
     fontFamily: "Inter_500Medium",
     fontSize: 10,
-    color: "rgba(255,255,255,0.75)",
+    color: "rgba(255,255,255,0.7)",
     textAlign: "center",
-    maxWidth: 72,
+    maxWidth: 70,
   },
   captureRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 40,
+    paddingHorizontal: 44,
+    marginBottom: 10,
   },
-  infoBtn: {
+  sideBtn: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "rgba(255,255,255,0.12)",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -433,15 +470,15 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: Colors.white,
+    backgroundColor: "rgba(255,255,255,0.95)",
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 4,
+    borderWidth: 3.5,
     borderColor: "rgba(255,255,255,0.5)",
   },
   shutterBtnDisabled: {
-    backgroundColor: "rgba(255,255,255,0.4)",
-    borderColor: "rgba(255,255,255,0.2)",
+    backgroundColor: "rgba(255,255,255,0.3)",
+    borderColor: "rgba(255,255,255,0.15)",
   },
   shutterInner: {
     width: 52,
@@ -449,69 +486,22 @@ const styles = StyleSheet.create({
     borderRadius: 26,
     backgroundColor: Colors.white,
   },
-  clearBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  overlayClothing: {
-    position: "absolute",
-    top: "15%",
-    left: "5%",
-    right: "5%",
-    height: "55%",
-    zIndex: 5,
-  },
-  overlayImage: {
-    width: "100%",
-    height: "100%",
-  },
-  loadingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.textTertiary,
-  },
-  permissionContainer: {
-    alignItems: "center",
-    paddingHorizontal: 40,
-    gap: 16,
-  },
-  permissionIcon: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: Colors.surfaceSecondary,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 8,
-  },
-  permissionTitle: {
-    fontFamily: "Inter_700Bold",
-    fontSize: 22,
-    color: Colors.text,
-    letterSpacing: -0.3,
-  },
-  permissionText: {
-    fontFamily: "Inter_400Regular",
-    fontSize: 15,
-    color: Colors.textSecondary,
-    textAlign: "center",
-    lineHeight: 22,
-  },
-  permissionBtn: {
-    marginTop: 8,
-    backgroundColor: Colors.text,
+  capturingIndicator: {
+    width: 28,
+    height: 28,
     borderRadius: 14,
-    paddingHorizontal: 32,
-    paddingVertical: 14,
+    backgroundColor: Colors.accent,
   },
-  permissionBtnText: {
-    fontFamily: "Inter_600SemiBold",
-    fontSize: 15,
-    color: Colors.white,
+  hint: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingBottom: 6,
+  },
+  hintText: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    color: "rgba(255,255,255,0.55)",
   },
 });
