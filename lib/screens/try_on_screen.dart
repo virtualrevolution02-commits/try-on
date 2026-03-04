@@ -350,6 +350,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
             ),
 
           // 2. Native AR View / 3D Overlay
+          Positioned.fill(
             child: kIsWeb
                 ? (selectedItem?.displayModelPath != null
                     ? ModelViewer(
@@ -546,7 +547,7 @@ class _TryOnScreenState extends State<TryOnScreen> with SingleTickerProviderStat
                 ],
               ),
             ),
-          )
+          ),
         ],
       ),
     );

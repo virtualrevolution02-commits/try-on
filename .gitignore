@@ -9,7 +9,6 @@ build/
 ios/Flutter/.last_build_id
 ios/Flutter/Generated.xcconfig
 ios/Flutter/flutter_export_environment.sh
-lib/generated_plugin_registrant.dart
 
 # Android related
 **/android/local.properties
@@ -28,3 +27,7 @@ lib/generated_plugin_registrant.dart
 *.swp
 .DS_Store
 .env
+
+# Optimization
+build/
+!dist/

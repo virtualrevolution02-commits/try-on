@@ -12,8 +12,16 @@ class DatabaseService {
   Future<void> connect() async {
     final url = dotenv.get('POSTGRES_URL');
     try {
+      // In newer postgres package versions, you can often pass the URL directly or parse it manually
+      final uri = Uri.parse(url);
       _connection = await Connection.open(
-        Endpoint.parse(url),
+        Endpoint(
+          host: uri.host,
+          database: uri.pathSegments.isNotEmpty ? uri.pathSegments.first : 'postgres',
+          username: uri.userInfo.split(':').first,
+          password: uri.userInfo.split(':').last,
+          port: uri.port != 0 ? uri.port : 5432,
+        ),
         settings: const ConnectionSettings(sslMode: SslMode.require),
       );
       print('Database connected successfully');
@@ -45,8 +53,8 @@ class DatabaseService {
           rating: (row[10] as num? ?? 5.0).toDouble(),
           reviewCount: row[11] as int? ?? 0,
           sizes: (row[12] as String? ?? "M,L,XL").split(','),
-          cloudinaryPublicId: row.columnDescriptions.any((c) => c.columnName == 'cloudinary_public_id') ? row[row.columnDescriptions.indexWhere((c) => c.columnName == 'cloudinary_public_id')] as String? : null,
-          cloudinaryModelId: row.columnDescriptions.any((c) => c.columnName == 'cloudinary_model_id') ? row[row.columnDescriptions.indexWhere((c) => c.columnName == 'cloudinary_model_id')] as String? : null,
+          cloudinaryPublicId: row.length > 13 ? row[13] as String? : null,
+          cloudinaryModelId: row.length > 14 ? row[14] as String? : null,
           colors: [],
         );
       }).toList();

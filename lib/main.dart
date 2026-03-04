@@ -1,7 +1,10 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'screens/try_on_screen.dart';
 import 'providers/tryon_provider.dart';
 import 'services/database_service.dart';
+import 'services/media_service.dart';
 import 'constants/colors.dart';
 
 Future<void> main() async {

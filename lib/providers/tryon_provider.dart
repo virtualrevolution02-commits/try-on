@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/clothing_item.dart';
 import '../services/database_service.dart';
 import '../constants/clothing_data.dart'; // Fallback for safety
@@ -42,6 +44,11 @@ class TryOnProvider with ChangeNotifier {
 
   List<ClothingItem> _clothingItems = [];
   bool _isLoading = true;
+  
+  ClothingItem? _selectedItem;
+  String _selectedColor = "";
+  String _selectedSize = "";
+  List<SavedLook> _savedLooks = [];
 
   TryOnProvider() {
     _loadSavedLooks();

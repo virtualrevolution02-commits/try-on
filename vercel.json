@@ -3,13 +3,12 @@
     "rewrites": [
         {
             "source": "/(.*)",
-            "destination": "/web/$1"
+            "destination": "/dist/$1"
         },
         {
-            "source": "/web/(.*)",
-            "destination": "/web/index.html"
+            "source": "/dist/(.*)",
+            "destination": "/dist/index.html"
         }
     ],
-    "cleanUrls": true,
-    "framework": "flutter"
+    "cleanUrls": true
 }
