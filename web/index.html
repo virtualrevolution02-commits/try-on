@@ -112,6 +112,11 @@
         this.videoTexture.minFilter = THREE.LinearFilter;
         this.videoTexture.magFilter = THREE.LinearFilter;
         this.videoTexture.format = THREE.RGBFormat;
+
+        // Mirror the camera feed horizontally for a natural "Selfie" mirror effect
+        this.videoTexture.wrapS = THREE.RepeatWrapping;
+        this.videoTexture.repeat.x = -1;
+
         this.scene.background = this.videoTexture;
 
         this.sceneInitialized = true;
@@ -126,12 +131,29 @@
 
         const loader = new THREE.GLTFLoader();
         loader.load(glbUrl, (gltf) => {
-          this.model = gltf.scene;
+          // Normalize the model's origin using its bounding box
+          const boundingBox = new THREE.Box3().setFromObject(gltf.scene);
+          const center = boundingBox.getCenter(new THREE.Vector3());
+          const size = boundingBox.getSize(new THREE.Vector3());
+
+          // Shift the mesh so the Group's origin (0,0,0) sits at the collarbone (15% below top edge)
+          gltf.scene.position.x = -center.x;
+          gltf.scene.position.y = -boundingBox.max.y + (size.y * 0.15);
+          gltf.scene.position.z = -center.z;
+
+          // Wrap in a group to act as the new anchor point
+          this.modelGroup = new THREE.Group();
+          this.modelGroup.add(gltf.scene);
+          this.model = this.modelGroup;
+
+          // Store intrinsic width for dynamic MediaPipe scaling later
+          this.modelIntrinsicWidth = size.x;
+
           // Initial safe placement, hidden behind camera until pose found
           this.model.position.set(0, 0, -10);
           this.model.scale.set(0, 0, 0);
           this.scene.add(this.model);
-          console.log("[WebAREngine] Model loaded successfully.");
+          console.log("[WebAREngine] Model loaded and origin-shifted successfully.");
         }, undefined, (error) => {
           console.error("[WebAREngine] GLTF Load Error:", error);
         });
@@ -182,55 +204,57 @@
         const wRH = worldLandmarks[24];
 
         // 1. POSITIONING (Screen Space Mapping)
-        // Convert MediaPipe normalized coordinates (0 to 1) to Three.js coordinates
-        // Three.js origin (0,0) is center. x goes -width/2 to width/2. y goes -height/2 to height/2.
-
-        // Get camera frustum dimensions at z=0 
         const vFOV = THREE.MathUtils.degToRad(this.camera.fov);
         const heightAtZ = 2 * Math.tan(vFOV / 2) * this.camera.position.z;
         const widthAtZ = heightAtZ * this.camera.aspect;
 
-        // Chest center
         const cx = (leftShoulder.x + rightShoulder.x) / 2;
         const cy = (leftShoulder.y + rightShoulder.y) / 2;
 
-        // Map to Three.js space (-1 to 1) * frustum size
-        const targetX = (cx * 2 - 1) * (widthAtZ / 2);
-        // MediaPipe Y is top-down (0 top, 1 bottom), Three.js Y is bottom-up
+        // Since we mirrored the VideoTexture (repeat.x = -1), we MUST mirror the MediaPipe X coordinate
+        const mirroredCX = 1.0 - cx;
+
+        const targetX = (mirroredCX * 2 - 1) * (widthAtZ / 2);
         const targetY = -(cy * 2 - 1) * (heightAtZ / 2);
 
-        // Offset slightly down so neck hole aligns with shoulders
+        // Apply position. (No manual Y offset needed now because we shifted the bounding box origin to the collarbone!)
         this.model.position.x = targetX;
-        this.model.position.y = targetY - (heightAtZ * 0.05); // adjust offset based on model
+        this.model.position.y = targetY;
 
-        // 2. SCALING
+        // 2. DYNAMIC SCALING
         const shoulderDistNormalized = Math.sqrt(Math.pow(leftShoulder.x - rightShoulder.x, 2) + Math.pow(leftShoulder.y - rightShoulder.y, 2));
-        // Base scale on shoulder width occupying the screen
-        const scaleFactor = shoulderDistNormalized * widthAtZ * 1.8; // Tune multiplier for fit
-        this.model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+        // A t-shirt typically overhangs the physical shoulder joints by a margin (approx 2.2x to 2.4x)
+        const desiredWidth = shoulderDistNormalized * widthAtZ * 2.3;
 
-        // 3. ROTATION (Using World Landmarks for true 3D Depth)
-        // Yaw (Turning left/right)
-        const yaw = Math.atan2(wLS.z - wRS.z, wLS.x - wRS.x);
+        if (this.modelIntrinsicWidth > 0) {
+          const scaleFactor = desiredWidth / this.modelIntrinsicWidth;
+          this.model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+        }
 
-        // Pitch (Leaning forward/back)
-        // Use average shoulder vs average hip Z to detect lean
+        // 3. ROTATION (True 3D depth from world landmarks)
+        // MediaPipe Z: Smaller is closer to camera.
+
+        // Pitch: Leaning forward/backward
         const chestZ = (wLS.z + wRS.z) / 2;
         const hipZ = (wLH.z + wRH.z) / 2;
         const chestY = (wLS.y + wRS.y) / 2;
         const hipY = (wLH.y + wRH.y) / 2;
-        const pitch = Math.atan2(chestZ - hipZ, chestY - hipY);
+        // Absolute Y distance avoids the 90-degree flip bug when standing straight up
+        const pitch = Math.atan2(hipZ - chestZ, Math.abs(hipY - chestY));
 
-        // Roll (Tilting head side to side / leaning shoulder)
+        // Yaw: Turning body left/right
+        const yaw = Math.atan2(wRS.z - wLS.z, wLS.x - wRS.x);
+
+        // Roll: Tilting shoulders side-to-side (Must be mirrored due to our texture flip)
         const roll = Math.atan2(wLS.y - wRS.y, wLS.x - wRS.x);
 
-        // Apply rotation to the model
-        // Note: Euler order (YXZ, etc.) and signage depends heavily on the specific GLB's native orientation.
-        // Assuming a standard T-pose front-facing model:
+        // Clamping prevents mathematical jitter and extreme unnatural flips
+        const clamp = (num, min, max) => Math.min(Math.max(num, min), max);
+
         this.model.rotation.set(
-          pitch * 0.5, // Slight dampening on pitch
-          -yaw,        // Invert yaw
-          -roll        // Invert roll
+          clamp(pitch, -0.6, 0.6),    // Pitch (Lean)
+          clamp(-yaw, -1.0, 1.0),      // Yaw (Turn) - negated for mirror fix
+          clamp(roll, -0.6, 0.6)      // Roll (Tilt)
         );
       },
 
