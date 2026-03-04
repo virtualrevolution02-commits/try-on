@@ -13,15 +13,15 @@ class WebPoseService {
   factory WebPoseService() => _instance;
   WebPoseService._internal();
 
-  Function(List<dynamic>)? onPoseUpdate;
+  Function(Map<String, dynamic>)? onPoseUpdate;
 
   void init() {
     if (!kIsWeb) return;
     
     try {
       WebPose.onPoseDetected = allowInterop((String jsonPose) {
-        final List<dynamic> landmarks = jsonDecode(jsonPose);
-        onPoseUpdate?.call(landmarks);
+        final Map<String, dynamic> data = jsonDecode(jsonPose);
+        onPoseUpdate?.call(data);
       });
       WebPose.init();
       debugPrint("WebPoseService initialized");

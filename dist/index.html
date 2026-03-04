@@ -50,13 +50,14 @@
 
         this.detector.onResults((results) => {
           if (this.onPoseDetected && results.poseLandmarks) {
-            // Send landmarks back to Flutter
-            this.onPoseDetected(JSON.stringify(results.poseLandmarks));
+            // Send landmarks and worldLandmarks back to Flutter for 3D orientation
+            this.onPoseDetected(JSON.stringify({
+              landmarks: results.poseLandmarks,
+              worldLandmarks: results.poseWorldLandmarks || null
+            }));
           }
         });
 
-        // Find the video element created by Flutter's camera package
-        // This is a bit hacky but works since Flutter uses <video> for camera web
         const findVideo = () => {
           const videos = document.getElementsByTagName('video');
           if (videos.length > 0) {
@@ -88,3 +89,4 @@
 </body>
 
 </html>
+产
