@@ -42,6 +42,7 @@ flutter:
   uses-material-design: true
   
   assets:
+    - .env
     - assets/models/
   
   # In a real app we'd define the custom fonts from React Native (Inter)

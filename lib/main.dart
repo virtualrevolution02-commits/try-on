@@ -9,7 +9,15 @@ import 'constants/colors.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: ".env");
+  
+  try {
+    await dotenv.load(fileName: ".env");
+  } catch (e) {
+    debugPrint("Warning: Could not load .env file: $e");
+    // Continue with environment variables if provided by the platform, 
+    // or rely on fallbacks in the services.
+  }
+  
   MediaService().init();
   
   runApp(
